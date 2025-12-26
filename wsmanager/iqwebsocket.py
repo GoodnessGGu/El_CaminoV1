@@ -90,26 +90,44 @@ class WebSocketManager:
         self.websocket.send(data)
         return request_id
     
-    def _on_message(self, ws, message):
+    def _on_message(self, *args):
         """
         Handle incoming WebSocket messages.
+        Supports both (self, message) and (self, ws, message) signatures.
         """
-        # print(message, '\n')
+        # Last argument is usually the message in both cases? 
+        # Old: (message) -> args[0]
+        # New: (ws, message) -> args[1]
+        
         try:
+            if len(args) == 1:
+                message = args[0]
+            elif len(args) == 2:
+                message = args[1]
+            else:
+                return
+
+            # print(message, '\n')
             message = json.loads(message) # Parse JSON message
             self.message_handler.handle_message(message) # Forward to message handler for processing
             self.ws_is_active = True # Mark connection as active after successful message processing
         except json.JSONDecodeError as e:
             print(f"Error parsing message: {e}")
+        except Exception as e:
+            print(f"Error in _on_message: {e}")
     
-    def _on_error(self, ws, error):
+    def _on_error(self, *args):
         """
         Handle WebSocket connection errors.
         """
+        # Usually last arg is error? Or first?
+        # Old: (error)
+        # New: (ws, error)
+        error = args[-1] if args else "Unknown Error"
         print(f"### WebSocket Error: {error} ###")
         self.ws_is_open = False
     
-    def _on_open(self, ws):
+    def _on_open(self, *args):
         """
         Handle WebSocket connection opened event.
         """
@@ -117,7 +135,7 @@ class WebSocketManager:
         self.ws_is_open = True
         pass
 
-    def _on_close(self, ws, close_status_code, close_msg):
+    def _on_close(self, *args):
         """
         Handle WebSocket connection closed event.
         """
