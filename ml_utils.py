@@ -48,8 +48,21 @@ def train_model(data_path="training_data.csv"):
     
     X = df.drop(columns=[c for c in annotated_cols if c in df.columns])
     
+    # DEBUG: Check for NaNs
+    logger.info(f"Shape before dropna: {X.shape}")
+    nan_counts = X.isna().sum()
+    with_nans = nan_counts[nan_counts > 0]
+    if not with_nans.empty:
+        logger.warning(f"Columns with NaNs:\n{with_nans}")
+    
     # 2. Drop NaNs from X and align y
     X = X.dropna()
+    logger.info(f"Shape after dropna: {X.shape}")
+    
+    if X.empty:
+        logger.error("❌ Training data is empty after removing NaNs! Check feature generation.")
+        return
+
     y = df.loc[X.index, 'outcome'] # Align y with cleaned X
     
     # Split

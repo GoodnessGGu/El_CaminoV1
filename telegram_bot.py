@@ -422,6 +422,7 @@ async def set_martingale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         config.max_martingale_gales = count
         await update.message.reply_text(f"✅ Max martingale gales set to {config.max_martingale_gales}")
+    except ValueError:
         await update.message.reply_text("⚠️ Invalid number.")
 
 async def set_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE):
