@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import logging
 from ml_utils import load_model, predict_signal, prepare_features
+from ml_lstm import predict_lstm, SEQ_LENGTH
+from settings import config
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +40,11 @@ PATTERN_CONFIG = {
     'pinbar': True,
     'star': True,
     'exhaustion': True,
-    '3soldiers': False,
+    '3soldiers': True,
     'tweezer': False,
     'inside': False,
     'piercing': False,
-    'marubozu': False
+    'marubozu': True
 }
 
 def analyze_strategy(candles_data, use_ai=True):
@@ -128,13 +130,25 @@ def analyze_strategy(candles_data, use_ai=True):
             # Encode direction for AI (1=CALL, -1=PUT)
             dir_val = 1 if signal == "CALL" else -1
             
-            prediction = predict_signal(ai_model, current_features, direction=dir_val)
+            prediction = 0
+            if config.model_type == "LSTM":
+                # LSTM needs Sequence [1, 10, Features]
+                # We need the last 10 'closed' candles.
+                # Since df contains 'current' in backtesting it might be fine, but we need 10 rows.
+                if len(df_features) >= SEQ_LENGTH:
+                    window = df_features.iloc[-SEQ_LENGTH:]
+                    prediction = predict_lstm(window)
+                else:
+                    logger.warning("Not enough data for LSTM sequence.")
+            else:
+                # XGBoost (Default)
+                prediction = predict_signal(ai_model, current_features, direction=dir_val)
             
             if prediction == 0: # 0 = Loss/Reject
-                logger.info(f"[AI] REJECTED {signal} ({triggered_pattern}) on {df.iloc[-1].get('time', 'unknown')}")
+                logger.info(f"[{config.model_type}] REJECTED {signal} ({triggered_pattern})")
                 return None
             else:
-                logger.info(f"[AI] APPROVED {signal} ({triggered_pattern}).")
+                logger.info(f"[{config.model_type}] APPROVED {signal} ({triggered_pattern}).")
                 
         except Exception as e:
             logger.error(f"AI Prediction failed: {e}")

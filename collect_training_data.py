@@ -3,7 +3,8 @@ import time
 import pandas as pd
 import numpy as np
 import os
-from iqoptionapi.stable_api import IQ_Option
+import asyncio
+from iqclient import IQOptionAPI
 from dotenv import load_dotenv
 from ml_utils import prepare_features
 
@@ -20,21 +21,32 @@ if not EMAIL or not PASSWORD:
     logger.error("❌ Credentials not found. Please set EMAIL and PASSWORD in .env file.")
     exit(1)
 
-API = IQ_Option(EMAIL, PASSWORD)
+API = IQOptionAPI(EMAIL, PASSWORD)
 
 def connect_iq():
-    check, reason = API.connect()
-    if check:
-        logger.info("✅ Connected to IQ Option successfully.")
+    # Run async connection
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    connected = loop.run_until_complete(API.ensure_connect())
+    
+    if connected:
+        logger.info("✅ Connected to IQ Option successfully (via iqclient).")
+        # Give it a moment to stabilize
+        time.sleep(2)
     else:
-        logger.error(f"❌ Connection failed: {reason}")
+        logger.error(f"❌ Connection failed.")
         exit(1)
 
-def get_candles(asset, timeframe=60, amount=1000):
+def get_candles(asset, timeframe=60, amount=1000, endtime=None):
     """Fetches candles from IQ Option."""
+    if endtime is None:
+        endtime = int(time.time())
+    else:
+        endtime = int(endtime)
+
     try:
-        # IQ Option API 'get_candles' returns list of dicts
-        candles = API.get_candles(asset, timeframe, amount, time.time())
+        # iqclient.get_candle_history args: asset_name, count, timeframe, end_time
+        candles = API.get_candle_history(asset, count=amount, timeframe=timeframe, end_time=endtime)
         return candles
     except Exception as e:
         logger.error(f"Error fetching candles for {asset}: {e}")
@@ -97,42 +109,90 @@ def label_data_binary_strategy(df):
 def collect_data():
     connect_iq()
     
-    assets = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"] # Major pairs
-    all_data = []
+    # Target and Correlations
+    target_asset = "EURUSD"
+    correlated_assets = ["USDJPY", "GBPUSD", "AUDUSD"] # Assets to use as features
     
-    for asset in assets:
+    all_assets = [target_asset] + correlated_assets
+    asset_dfs = {}
+    
+    TOTAL_CANDLES = 50000 
+    
+    # 1. Fetch Data for ALL assets
+    for asset in all_assets:
         logger.info(f"Fetching data for {asset}...")
-        candles = get_candles(asset, timeframe=60, amount=3000) # 1 minute candles
         
-        if not candles:
-            continue
+        asset_candles = []
+        end_time = time.time()
+        
+        while len(asset_candles) < TOTAL_CANDLES:
+            candles = get_candles(asset, timeframe=300, amount=1000, endtime=end_time)
             
-        df = pd.DataFrame(candles)
+            if not candles:
+                logger.warning(f"No more candles for {asset}")
+                break
+            
+            asset_candles = candles + asset_candles
+            new_end_time = candles[0]['from']
+            
+            if new_end_time >= end_time:
+                 break
+            end_time = new_end_time
+            
+            logger.info(f"  {asset}: {len(asset_candles)} / {TOTAL_CANDLES}")
+            time.sleep(0.2)
+            
+        # Create DataFrame
+        df = pd.DataFrame(asset_candles)
+        if df.empty:
+            logger.error(f"Failed to fetch data for {asset}")
+            return
+
+        df = df.drop_duplicates(subset=['from']).sort_values(by='from').reset_index(drop=True)
         
-        # Standardize columns
-        # IQ Option API returns: 'id', 'from', 'at', 'to', 'open', 'close', 'min', 'max', 'volume'
-        # Rename 'from' to 'time' or ensure prepare_features handles it
+        # Standardize time
         if 'from' in df.columns:
             df['time'] = pd.to_datetime(df['from'], unit='s')
+            
+        # Calculate Basic Indicators per Asset (RSI, etc)
+        # We need these features for the correlated assets too!
+        # But prepare_features might drop 'time' or 'from', so be careful.
+        # We want to keep 'time' for merging.
         
-        # Prepare Features (RSI, Bollinger, etc.)
-        df = prepare_features(df)
+        # Let's simple rename raw columns for correlated assets
+        if asset != target_asset:
+            # Keep only useful columns for correlation: Close, Open, Min, Max, Volume
+            cols_to_keep = ['time', 'open', 'close', 'min', 'max', 'volume']
+            df = df[cols_to_keep]
+            
+            # Rename columns: e.g. open -> USDJPY_open
+            rename_map = {c: f"{asset}_{c}" for c in df.columns if c != 'time'}
+            df = df.rename(columns=rename_map)
+            
+        asset_dfs[asset] = df
         
-        # Create Target Label
-        df = label_data_binary_strategy(df)
-        
-        # Add metadata
-        df['asset'] = asset
-        
-        all_data.append(df)
-        time.sleep(1) # Be nice to API
-        
-    if all_data:
-        final_df = pd.concat(all_data, ignore_index=True)
-        final_df.to_csv("training_data.csv", index=False)
-        logger.info(f"✅ Successfully saved {len(final_df)} rows to training_data.csv")
-    else:
-        logger.warning("No data collected.")
+    # 2. Merge DataFrames on 'time'
+    logger.info("Merging Correlation Data...")
+    final_df = asset_dfs[target_asset]
+    
+    for asset in correlated_assets:
+        if asset in asset_dfs:
+            # Inner join to ensure we only train on rows where we have ALL data (synchronous)
+            final_df = pd.merge(final_df, asset_dfs[asset], on='time', how='inner')
+            
+    logger.info(f"Merged Data Shape: {final_df.shape}")
+    
+    # 3. Feature Engineering (Target Asset)
+    # The 'prepare_features' might expect specific column names (open, close...) which EURUSD still has.
+    final_df = prepare_features(final_df)
+    
+    # 4. Generate Target Label (Outcome)
+    final_df = label_data_binary_strategy(final_df)
+    
+    # 5. Save
+    final_df['asset'] = target_asset
+    final_df.to_csv("training_data.csv", index=False)
+    logger.info(f"✅ Saved Wide-Dataset to training_data.csv ({len(final_df)} rows)")
 
 if __name__ == "__main__":
     collect_data()

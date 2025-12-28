@@ -2,7 +2,7 @@ import asyncio
 import pandas as pd
 import logging
 from iqclient import IQOptionAPI
-from strategies import analyze_strategy
+from strategies import analyze_strategy, PATTERN_CONFIG
 from ml_utils import prepare_features
 
 # Configure logging
@@ -43,13 +43,24 @@ async def collect_and_label_data(api, asset, count=5000, timeframe=60):
     records = df_features.to_dict('records')
     min_candles = 35 # Minimum required by strategy
     
-    logger.info("Labeling data...")
+    logger.info("Labeling data (Optimized)...")
     for i in range(min_candles, len(records) - 1):
-        # Current candle at 'i'. We want to see if strategy gives a signal at 'i'
-        # Strategy input: History up to 'i'
-        history_slice = records[:i+1]
+        # Current candle at 'i'
+        row = records[i]
+        signal = None
         
-        signal = analyze_strategy(history_slice, use_ai=False)
+        # Check patterns directly from pre-calculated features
+        for key, enabled in PATTERN_CONFIG.items():
+            if enabled:
+                col_name = f'pattern_{key}'
+                if col_name in row:
+                    val = row[col_name]
+                    if val == 1:
+                        signal = "CALL"
+                        break
+                    elif val == -1:
+                        signal = "PUT"
+                        break
         
         if signal:
             # Check Outcome

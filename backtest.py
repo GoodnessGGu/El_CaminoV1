@@ -135,9 +135,14 @@ def simulate_trades(df, max_gales=2):
     
     return df
 
-async def main():
-    email = os.getenv("IQ_EMAIL") or os.getenv("email")
-    password = os.getenv("IQ_PASSWORD") or os.getenv("password")
+async def run_backtest(api_input=None):
+    if api_input:
+        api = api_input
+    else:
+        email = os.getenv("IQ_EMAIL") or os.getenv("email")
+        password = os.getenv("IQ_PASSWORD") or os.getenv("password")
+        api = IQOptionAPI()
+        await api._connect()
     
     logger.info("✅ Connected to IQ Option API (PRACTICE)")
     
@@ -192,5 +197,6 @@ async def main():
         print(f"{'='*40}\n")
 
     api.websocket.close()
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_backtest())

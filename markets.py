@@ -59,33 +59,59 @@ class MarketManager:
             end_time: Optional timestamp to fetch candles up to (default: now)
         """
 
-        # Reset state and prepare request
-        self.message_handler.candles = None
+
+        # Pagination loop for >1000 candles
+        all_candles = []
+        remaining = count
+        current_to_time = end_time if end_time else self.message_handler.server_time
         
-        # Use provided end time or current server time
-        to_time = end_time if end_time else self.message_handler.server_time
-        
-        name = "sendMessage"
-        msg = {
-            "name": "get-candles",
-            "version": "2.0",
-            "body": {
-                "active_id": self.get_asset_id(asset_name),
-                "size": timeframe,
-                "count": count,
-                "to": to_time,
-                "only_closed": True,
-                "split_normalization": True
+        while remaining > 0:
+            chunk_size = min(remaining, 1000)
+            
+            # Reset state
+            self.message_handler.candles = None
+            
+            name = "sendMessage"
+            msg = {
+                "name": "get-candles",
+                "version": "2.0",
+                "body": {
+                    "active_id": self.get_asset_id(asset_name),
+                    "size": timeframe,
+                    "count": chunk_size,
+                    "to": current_to_time,
+                    "only_closed": True,
+                    "split_normalization": True
+                }
             }
-        }
-        
-        self.ws_manager.send_message(name, msg)
-        
-        # Wait for response
-        while self.message_handler.candles is None:
-            time.sleep(0.1)
-        
-        return self.message_handler.candles
+            
+            self.ws_manager.send_message(name, msg)
+            
+            # Wait for response
+            timeout = 10
+            start_wait = time.time()
+            while self.message_handler.candles is None:
+                if time.time() - start_wait > timeout:
+                    print(f"Timeout fetching candles for {asset_name}")
+                    break
+                time.sleep(0.05)
+            
+            candles = self.message_handler.candles
+            if not candles:
+                break
+                
+            # Prepend (since we are going backwards in time)
+            all_candles = candles + all_candles
+            
+            remaining -= len(candles)
+            
+            # Update 'to' time for next chunk (oldest candle's 'from' time)
+            current_to_time = candles[0]['from']
+            
+            # Rate limit safety
+            time.sleep(0.2)
+            
+        return all_candles
     
     def plot_candles(self, candles_data=None):
         """
@@ -347,4 +373,36 @@ class MarketManager:
                         return value['option_profits'].get("call", 0) * 100
 
         raise KeyError(f"Payout for {asset} not found")
+
+    def get_traders_mood(self, asset_name: str) -> float:
+        """
+        Get the crowd sentiment (Traders Mood) for an asset.
+        Returns a float representing the percentage of buyers (Calls).
+        e.g., 0.70 means 70% Call / 30% Put.
+        """
+        active_id = self.get_asset_id(asset_name)
+        
+        # Reset handler state
+        self.message_handler.traders_mood = {} 
+        
+        # Subscribe/Request mood
+        # IQ Option uses 'subscribeMessage' for this usually
+        msg = {
+            "name": "subscribe-traders-mood",
+            "version": "1.0",
+            "body": {
+                "active_id": active_id
+            }
+        }
+        self.ws_manager.send_message("sendMessage", msg)
+        
+        # Wait for data (non-blocking ideally, but blocking here for simplicity)
+        start = time.time()
+        while active_id not in self.message_handler.traders_mood:
+            if time.time() - start > 5:
+                logger.warning(f"Timeout fetching mood for {asset_name}")
+                return 0.5 # Neutral fallback
+            time.sleep(0.1)
+            
+        return self.message_handler.traders_mood[active_id]
 

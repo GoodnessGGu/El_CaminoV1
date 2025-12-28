@@ -41,7 +41,7 @@ def train_model(data_path="training_data.csv"):
     drop_raw = ['open', 'close', 'min', 'max', 'volume', 'sma_20', 'sma_50', 'bb_upper', 'bb_lower']
     
     # Also drop metadata
-    drop_meta = ['time', 'outcome', 'signal', 'asset', 'from', 'to']
+    drop_meta = ['time', 'outcome', 'signal', 'asset', 'from', 'to', 'id', 'at', 'next_close', 'next_open']
     
     # Combine drops
     annotated_cols = drop_raw + drop_meta
@@ -462,3 +462,6 @@ def predict_signal(model, features_df, direction=None):
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         return 1 # Fallback
+
+if __name__ == "__main__":
+    train_model()

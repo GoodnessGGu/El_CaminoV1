@@ -52,6 +52,7 @@ class TradingConfig:
         self.smart_martingale = False # Wait for new signal before martingale?
         self.daily_stop_loss = float(os.getenv("DAILY_STOP_LOSS", 0.0)) # 0 = Disabled
         self.news_filter_on = os.getenv("NEWS_FILTER_ON", "False").lower() in ('true', '1', 'yes')
+        self.model_type = os.getenv("MODEL_TYPE", "XGBOOST").upper() # XGBOOST or LSTM
 
     def __str__(self):
         return (f"TradingConfig(amount={self.trade_amount}, "
@@ -61,6 +62,7 @@ class TradingConfig:
                 f"suppress={self.suppress_overlapping_signals}, "
                 f"daily_stop={self.daily_stop_loss}, "
                 f"news_filter={self.news_filter_on}, "
+                f"model={self.model_type}, "
                 f"account={self.account_type})")
 
 config = TradingConfig()

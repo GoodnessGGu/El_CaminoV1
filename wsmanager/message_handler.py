@@ -17,6 +17,7 @@ class MessageHandler:
             'digital_options': {},
             'binary_options': {}
         }
+        self.traders_mood = {} # {asset_id: sentiment_value}
         # Optimization: Event-driven confirmation
         import asyncio
         self.pending_digital_orders = {} # {request_id: asyncio.Future}
@@ -42,10 +43,28 @@ class MessageHandler:
             "position-changed": self._handle_position_changed,
             "option-opened": self._handle_binary_option_opened,
             "option-closed": self._handle_binary_option_closed,
+            "traders-mood-changed": self._handle_traders_mood,
         }
         handler = handlers.get(message_name)
         if handler:
             handler(message)
+        else:
+             if "mood" in message_name.lower():
+                 logger.info(f"UNHANDLED MOOD MSG: {message}")
+
+    def _handle_traders_mood(self, message):
+        """
+        Msg: {'name': 'traders-mood-changed', 'msg': {'asset_id': 1, 'value': 0.76}, ...}
+        """
+        try:
+            msg = message['msg']
+            asset_id = msg.get('asset_id')
+            value = msg.get('value') # e.g. 0.76 (76% Call)
+            
+            if asset_id is not None:
+                self.traders_mood[asset_id] = value
+        except Exception as e:
+            logger.error(f"Error handling traders mood: {e}")
 
     def _handle_server_time(self, message):
         self.server_time = message['msg']

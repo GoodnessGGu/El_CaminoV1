@@ -21,7 +21,9 @@ from channel_monitor import ChannelMonitor
 from strategies import analyze_strategy, reload_ai_model
 from collect_data import run_collection_cycle
 from ml_utils import train_model
+from collect_data import run_collection_cycle
 from ml_utils import train_model
+from ml_lstm import train_lstm
 from smart_trade import smart_trade_manager
 from risk_manager import risk_manager
 from news_manager import news_manager
@@ -438,6 +440,20 @@ async def set_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("⚠️ Invalid amount.")
 
+async def set_model_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(f"USAGE: /model <XGBOOST/LSTM>\nCurrent: {config.model_type}")
+        return
+        
+    model = context.args[0].upper()
+    if model not in ['XGBOOST', 'LSTM']:
+        await update.message.reply_text("⚠️ Invalid model. Use 'XGBOOST' or 'LSTM'.")
+        return
+        
+    config.model_type = model
+    update_env_variable("MODEL_TYPE", model)
+    await update.message.reply_text(f"✅ AI Model switched to: *{model}*", parse_mode="Markdown")
+
 async def toggle_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         # Toggle
@@ -836,7 +852,12 @@ async def retrain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Train in thread to avoid blocking bot
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(None, train_model)
+        if config.model_type == "LSTM":
+             await update.message.reply_text("🧠 Training LSTM (Neural Network)...")
+             await loop.run_in_executor(None, train_lstm)
+        else:
+             await update.message.reply_text("🧠 Training XGBoost...")
+             await loop.run_in_executor(None, train_model)
     except Exception as e:
         await update.message.reply_text(f"❌ Training failed: {e}")
         return
@@ -956,6 +977,7 @@ def main():
     app.add_handler(CommandHandler("smart_gale", toggle_smart_gale))
     app.add_handler(CommandHandler("set_stop", set_stop_loss))
     app.add_handler(CommandHandler("news", toggle_news))
+    app.add_handler(CommandHandler("model", set_model_type))
 
     app.add_error_handler(error_handler)
 
