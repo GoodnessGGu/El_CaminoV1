@@ -41,6 +41,7 @@ class ChannelMonitor:
         self.notification_callback = notification_callback
         self.client: Optional[TelegramClient] = None
         self.is_running = False
+        self.processed_ids = set() # Deduplication cache
 
     async def start(self, channel_identifier: Optional[str] = None):
         """Start monitoring a channel. If `channel_identifier` is provided it overrides
@@ -146,6 +147,18 @@ class ChannelMonitor:
 
             if not message_text:
                 return
+
+            # --- Deduplication ---
+            msg_id = getattr(event.message, 'id', None)
+            if msg_id:
+                if msg_id in self.processed_ids:
+                    # logger.debug(f"Ignoring duplicate message ID: {msg_id}")
+                    return
+                self.processed_ids.add(msg_id)
+                # Keep set size manageable (optional, remove old if > 1000)
+                if len(self.processed_ids) > 1000:
+                    self.processed_ids.clear() 
+            # ---------------------
 
             logger.info(f"📨 Auto-Signal Received: {message_text[:80]}...")
 
@@ -303,7 +316,15 @@ class ChannelMonitor:
 
             # Smart Martingale Integration
             base_amount = config.trade_amount
-            trade_amount, max_gales = smart_trade_manager.get_trade_details(signal['pair'], base_amount)
+            
+            # SAFE UNPACKING DEBUG
+            details = smart_trade_manager.get_trade_details(signal['pair'], base_amount)
+            if isinstance(details, (tuple, list)) and len(details) == 2:
+                trade_amount, max_gales = details
+            else:
+                logger.error(f"❌ get_trade_details returned unexpected value: {details}")
+                trade_amount = base_amount
+                max_gales = config.max_martingale_gales
 
             try:
                 result = await run_trade(

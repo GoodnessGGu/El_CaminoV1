@@ -12,19 +12,19 @@ PATTERN_CONFIG = {
     'marubozu': False
 }
 
-def analyze_strategy(candles_data):
+def analyze_strategy(candles_data, asset_name=None):
     """
     Analyzes candle data using ONLY the 'New Script' logic (SMA 3, 7, 200 + Engulfing).
     No AI, No ML features, No heavy processing.
+    
+    Args:
+        candles_data: List of candle dicts
+        asset_name: Optional asset name (e.g. "EURUSD") to Determine Real vs OTC logic.
     """
     if not candles_data or len(candles_data) < 200:
         # Need enough data for SMA 200
         return None
 
-    # Optimize: We only need the last 205 candles to calculate SMA 200 for the last few points
-    # Passing 3000 candles creates a massive generic DF.
-    # We'll take the whole list for now, but DF creation is fast enough for 3000 rows if we don't do complex features.
-    
     try:
         # Create DataFrame
         df = pd.DataFrame(candles_data)
@@ -74,20 +74,31 @@ def analyze_strategy(candles_data):
         body_prev = abs(close_prev - open_prev)
         is_engulfing = body_curr > body_prev
         
+        # --- VOLUME VALIDATION (REAL MARKETS) ---
+        is_volume_valid = True
+        if asset_name and "-OTC" not in asset_name and "OTC" not in asset_name:
+             # Logic: Current Volume > Previous Volume (Momentum confirmation)
+             vol_curr = curr.get('volume', 0)
+             vol_prev = prev.get('volume', 0)
+             if vol_curr <= vol_prev:
+                 is_volume_valid = False
+                 # logger.info(f"Filtered {asset_name}: Low Volume Breakout")
+        
         # Check Strategy Conditions
         signal = None
         
-        # CALL SIGNAL
-        # Logic: Green, Prev Red, Engulfing, Above ALL SMAs
-        if is_green and prev_is_red and is_engulfing:
-            if close_curr > sma3 and close_curr > sma7 and close_curr > sma200:
-                signal = "CALL"
-        
-        # PUT SIGNAL
-        # Logic: Red, Prev Green, Engulfing, Below ALL SMAs
-        elif is_red and prev_is_green and is_engulfing:
-            if close_curr < sma3 and close_curr < sma7 and close_curr < sma200:
-                signal = "PUT"
+        if is_engulfing and is_volume_valid:
+            # CALL SIGNAL
+            # Logic: Green, Prev Red, Engulfing, Above ALL SMAs
+            if is_green and prev_is_red:
+                if close_curr > sma3 and close_curr > sma7 and close_curr > sma200:
+                    signal = "CALL"
+            
+            # PUT SIGNAL
+            # Logic: Red, Prev Green, Engulfing, Below ALL SMAs
+            elif is_red and prev_is_green:
+                if close_curr < sma3 and close_curr < sma7 and close_curr < sma200:
+                    signal = "PUT"
                 
         return signal
 
@@ -105,3 +116,72 @@ def confirm_trade_with_ai(candles_data, direction):
 def reload_ai_model():
     # Placeholder to prevent import errors in main
     pass
+
+def analyze_colormillion(candles_data, asset_name=None):
+    """
+    Analyzes candle data using 'ColorMillion 2023' Logic.
+    
+    Indicators:
+    - EMA 13
+    - MACD (12, 26, 9)
+    
+    Signal Logic:
+    - CALL: EMA13 > Prev EMA13  AND  MACD_Hist > Prev MACD_Hist
+    - PUT:  EMA13 < Prev EMA13  AND  MACD_Hist < Prev MACD_Hist
+    
+    Args:
+        candles_data: List of candle dicts
+        asset_name: Optional, for consistency/logging
+    """
+    if not candles_data or len(candles_data) < 50:
+         return None
+
+    try:
+        df = pd.DataFrame(candles_data)
+        cols = ['open', 'close', 'min', 'max', 'volume']
+        for c in cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c])
+
+        # --- 1. EMA 13 ---
+        df['ema_13'] = df['close'].ewm(span=13, adjust=False).mean()
+
+        # --- 2. MACD (12, 26, 9) ---
+        # Fast EMA 12
+        ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+        # Slow EMA 26
+        ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+        
+        df['macd_line'] = ema_12 - ema_26
+        df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd_line'] - df['signal_line']
+
+        # Get Last 2 Candles
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        # Check if indicators are valid (not NaN)
+        if pd.isna(curr['ema_13']) or pd.isna(curr['macd_hist']):
+            return None
+
+        ema_curr = curr['ema_13']
+        ema_prev = prev['ema_13']
+        
+        hist_curr = curr['macd_hist']
+        hist_prev = prev['macd_hist']
+        
+        signal = None
+        
+        # CALL Logic: Both Rising
+        if ema_curr > ema_prev and hist_curr > hist_prev:
+            signal = "CALL"
+            
+        # PUT Logic: Both Falling
+        elif ema_curr < ema_prev and hist_curr < hist_prev:
+            signal = "PUT"
+            
+        return signal
+
+    except Exception as e:
+        logger.error(f"ColorMillion Error: {e}")
+        return None

@@ -283,9 +283,38 @@ class TradeManager:
             # Usually this method is called immediately after placement.
             # So 'start_time + expiry' is roughly the close time.
             time_since_start = time.time() - start_time
-            if not is_closed and time_since_start > (expiry + random.randint(1, 5)):
+            # Active Polling (Fallback if socket is silent for > 5s after expiry)
+            if not is_closed and time_since_start > (int(expiry) * 60 + 3) and not force_check:
+                 logger.info(f"🕵️ Binary Result Polling: Fetching history for {order_id}...")
+                 try:
+                     # Fetch recent 10 positions (Turbo/Binary)
+                     history = self.account_manager.get_position_history_by_page(
+                         ["turbo-option", "binary-option"], limit=10, offset=0
+                     )
+                     if history:
+                         for pos in history:
+                             # Match by ID (External ID or ID)
+                             # Some responses use 'id', others 'external_id'
+                             p_id = str(pos.get("id"))
+                             p_ext = str(pos.get("external_id"))
+                             tgt = str(order_id)
+                             
+                             if tgt == p_id or tgt == p_ext:
+                                 # Found it!
+                                 order_data = pos
+                                 is_closed = True # It's in history, so it's closed
+                                 # Standardize for logic below
+                                 if "win" not in order_data:
+                                     order_data["win"] = order_data.get("close_reason", "")
+                                 
+                                 logger.info(f"✅ Found trade {order_id} in history via polling.")
+                                 break
+                 except Exception as e:
+                     logger.warning(f"Polling failed: {e}")
+
+            if not is_closed and time_since_start > (int(expiry) * 60 + random.randint(10, 20)):
                 force_check = True
-                logger.warning(f"⚠️ Trade {order_id} server timeout (>5s delay). Forcing Shadow Verification.")
+                logger.warning(f"⚠️ Trade {order_id} server timeout (>15s delay). Forcing Shadow Verification.")
             
             if is_closed or force_check:
                 # Check outcome

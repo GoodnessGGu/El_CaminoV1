@@ -390,6 +390,39 @@ from settings import config
 # Global set to track active trades to prevent overlapping signals
 ACTIVE_TRADES = set()
 
+async def wait_for_new_candle(timeframe='1m'):
+    """
+    Async wait until the start of the next candlestick to ensure optimal entry.
+    """
+    start_wait = time.time()
+    logger.info("⏳ Waiting for candle sync...")
+    
+    # Calculate target sync
+    # If timeframe is 1m, we want seconds % 60 == 0
+    while True:
+        now = time.time()
+        sec = int(now) % 60
+        
+        # We want to be at sec=0 or 1.
+        # If we are at sec=58 or 59, we are close.
+        
+        # If we are in the first 2 seconds, we are good.
+        if sec < 2:
+            break
+            
+        # Calculate delay
+        delay = 60 - sec
+        
+        # If delay is large, sleep effectively
+        if delay > 0.5:
+            await asyncio.sleep(min(delay - 0.2, 0.5))
+        else:
+            await asyncio.sleep(0.05)
+            
+        if time.time() - start_wait > 300: # Safety break
+            logger.warning("⚠️ Candle sync timed out")
+            break
+
 async def run_trade(api, asset, direction, expiry, amount, max_gales=None, notification_callback=None):
     """
     Executes a trade (digital only) and handles up to a configurable number of martingale attempts.
