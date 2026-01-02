@@ -41,7 +41,7 @@ async def collect_and_label_data(api, asset, count=5000, timeframe=60):
     labeled_data = []
     
     records = df_features.to_dict('records')
-    min_candles = 35 # Minimum required by strategy
+    min_candles = 210 # Minimum required by SMA 200
     
     logger.info("Labeling data (Optimized)...")
     for i in range(min_candles, len(records) - 1):
@@ -49,18 +49,34 @@ async def collect_and_label_data(api, asset, count=5000, timeframe=60):
         row = records[i]
         signal = None
         
-        # Check patterns directly from pre-calculated features
-        for key, enabled in PATTERN_CONFIG.items():
-            if enabled:
-                col_name = f'pattern_{key}'
-                if col_name in row:
-                    val = row[col_name]
-                    if val == 1:
-                        signal = "CALL"
-                        break
-                    elif val == -1:
-                        signal = "PUT"
-                        break
+        prev_row = records[i-1]
+        
+        # Replicate ColorMillion Logic + Filters
+        # Note: We use the ML-calculated features here.
+        # Strategy: EMA13 Rising + MACD Rising + Trend(SMA200) + ADX>20
+        
+        ema_c = row.get('ema_13')
+        ema_p = prev_row.get('ema_13')
+        hist_c = row.get('macd_hist')
+        hist_p = prev_row.get('macd_hist')
+        trend_ma = row.get('sma_200') # Using SMA200 as ML trend feature
+        adx = row.get('adx', 0)
+        close = row['close']
+        
+        # Debug Log first 5 checks
+        if i < min_candles + 5:
+             logger.info(f"DEBUG {i}: EMAc={ema_c}, EMAp={ema_p}, HistC={hist_c}, ...")
+        
+        if ema_c and ema_p and hist_c is not None and hist_p is not None and trend_ma and not pd.isna(trend_ma):
+            # CALL
+            if (ema_c > ema_p) and (hist_c > hist_p):
+                 if close > trend_ma and adx > 20:
+                     signal = "CALL"
+            
+            # PUT
+            elif (ema_c < ema_p) and (hist_c < hist_p):
+                 if close < trend_ma and adx > 20:
+                     signal = "PUT"
         
         if signal:
             # Check Outcome
@@ -123,12 +139,13 @@ async def run_collection_cycle(api_instance=None):
 
         # Collect data for a few assets to generalize better
         assets = [
-            "EURUSD-OTC", "GBPUSD-OTC"
+            "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDCAD-OTC", 
+            "NZDUSD-OTC", "USDCHF-OTC", "EURGBP-OTC"
         ]
         all_data = []
         
         for asset in assets:
-            df = await collect_and_label_data(api, asset, count=10000)
+            df = await collect_and_label_data(api, asset, count=5000)
             if df is not None:
                  df['asset'] = asset
                  all_data.append(df)

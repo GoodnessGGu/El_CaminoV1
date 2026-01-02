@@ -265,6 +265,9 @@ def prepare_features(df):
     df['sma_7'] = df['close'].rolling(window=7).mean()
     df['sma_200'] = df['close'].rolling(window=200).mean()
     
+    # ColorMillion Requirements
+    df['ema_13'] = df['close'].ewm(span=13, adjust=False).mean()
+    
     df['dist_sma_20'] = (df['close'] - df['sma_20']) / df['close'] * 100
     df['dist_sma_50'] = (df['close'] - df['sma_50']) / df['close'] * 100
     

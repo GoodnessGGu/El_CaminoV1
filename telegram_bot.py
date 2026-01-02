@@ -1,5 +1,6 @@
 # telegram_bot.py
 import os
+import pandas as pd
 import asyncio
 import logging
 import time
@@ -617,26 +618,42 @@ async def auto_trade_loop(asset, timeframe, context, chat_id):
             
             signal = analyze_colormillion(candles, asset_name=asset)
             
-            if signal:
-                # --- AI FILTER INTEGRATION ---
-                if config.use_ai_filter:
-                    logger.info(f"🧠 Verifying {signal} signal for {asset} with AI...")
-                    # We need the candles for feature generation
-                    # The 'candles' variable here is already a list of dicts from api.get_candle_history
-                    from strategies import confirm_trade_with_ai
+            # --- AI Filter Integration ---
+            if signal and config.use_ai_filter:
+                try:
+                    # Lazy load model if needed (or load globally)
+                    from ml_utils import prepare_features, load_model, predict_signal
+                    # We might want to cache this model rather than load every time, 
+                    # but for now, let's load it here or rely on OS caching.
+                    # Best practice: Load outside loop? 
+                    # For safety against staleness during retraining, loading here is OK, or reload if retrained.
+                    model = load_model()
                     
-                    is_confirmed = confirm_trade_with_ai(candles, signal)
-                    
-                    if not is_confirmed:
-                        logger.info(f"🛑 Trade Suppressed by AI: {asset} {signal}")
-                        # Optional: Notify user of suppression?
-                        # await context.bot.send_message(chat_id=chat_id, text=f"🧠 AI Denied: {asset} {signal}")
-                        await asyncio.sleep(5) 
-                        continue # Skip this trade
+                    if model:
+                        # Prepare data
+                        df_ai = pd.DataFrame(candles)
+                        features = prepare_features(df_ai)
+                        
+                        # Predict on the LAST candle (current state)
+                        # Use iloc[[-1]] to keep it as a DataFrame
+                        current_features = features.iloc[[-1]]
+                        
+                        # Predict
+                        ai_approval = predict_signal(model, current_features, direction=signal)
+                        
+                        if not ai_approval:
+                            logger.info(f"🤖 AI REJECTED {asset} {signal} signal (Low Confidence).")
+                            signal = None # Supress signal
+                        else:
+                            logger.info(f"🤖 AI APPROVED {asset} {signal} signal!")
                     else:
-                         logger.info(f"✅ AI Confirmed: {asset} {signal}")
-                # -----------------------------
-
+                        logger.warning("⚠️ AI Filter is ON but no model found! Skipping AI check.")
+                        
+                except Exception as e:
+                    logger.error(f"AI Check Failed: {e}")
+            # -----------------------------
+            
+            if signal:
                 msg = f"🎯 Strategy Signal found for *{asset}*: *{signal}*\n🚀 Executing trade..."
                 logger.info(f"🎯 Strategy Signal found for {asset}: {signal}")
                 try:

@@ -106,88 +106,16 @@ def analyze_strategy(candles_data, asset_name=None):
         logger.error(f"Strategy Error: {e}")
         return None
 
-from ml_utils import load_model, prepare_features, predict_signal
-from ml_lstm import predict_lstm, get_model_and_scaler
-
-# Cache for loaded models to avoid disk I/O on every tick
-CACHED_MODEL = None
-
-def reload_ai_model():
-    """Forces reload of the AI model from disk."""
-    global CACHED_MODEL
-    CACHED_MODEL = load_model()
-    logger.info("🧠 AI Model Reloaded via Strategy.")
-
 def confirm_trade_with_ai(candles_data, direction):
     """
-    Validates a signal using the trained Machine Learning Model.
-    
-    Args:
-        candles_data (list): List of candle dictionaries (must be enough for features like RSI/SMA)
-        direction (str): 'CALL' or 'PUT'
-        
-    Returns:
-        bool: True if AI approves (or AI is disabled/failed), False if AI rejects.
+    Dummy function to satisfy imports. 
+    Always returns True since AI is disabled for this strategy.
     """
-    global CACHED_MODEL
-    
-    if not candles_data:
-        return True # Default to allow if no data
-        
-    try:
-        # Convert to DataFrame
-        df = pd.DataFrame(candles_data)
-        
-        # 1. Generate Technical Features
-        # Note: prepare_features expects standard columns
-        features_df = prepare_features(df)
-        
-        # We need the last row to predict (the current market state)
-        last_row = features_df.tail(1)
-        
-        # 2. Select Model based on Config
-        if config.model_type == "LSTM":
-            # LSTM needs a sequence (e.g. last 10 candles)
-            # We assume prepare_sequences logic is handled inside predict_lstm or we pass a window
-            # predict_lstm expects a DataFrame window of 10 candles
-            window = df.tail(10)
-            if len(window) < 10:
-                logger.warning("⚠️ Not enough data for LSTM (Need 10 candles). AI Skipped.")
-                return True
-                
-            prediction = predict_lstm(window)
-            is_approved = (prediction == 1)
-            
-            if not is_approved:
-                logger.info(f"🧠 LSTM Rejected Signal: {direction}")
-            else:
-                logger.info(f"🧠 LSTM Approved Signal: {direction}")
-                
-            return is_approved
-            
-        else:
-            # XGBoost / Random Forest
-            if CACHED_MODEL is None:
-                CACHED_MODEL = load_model()
-                
-            if CACHED_MODEL is None:
-                logger.warning("⚠️ No AI Model found. Skipping AI Check.")
-                return True # Fail open (allow trade)
-            
-            # Predict
-            # 1 = Win, 0 = Loss
-            decision = predict_signal(CACHED_MODEL, last_row, direction)
-            
-            if decision == 1:
-                logger.info(f"🧠 AI Approved {direction} (Confidence High)")
-                return True
-            else:
-                logger.info(f"🧠 AI Rejected {direction} (Low Probability)")
-                return False
-                
-    except Exception as e:
-        logger.error(f"AI Confirmation Failed: {e}", exc_info=True)
-        return True # Fail open to ensure trading continues if AI bugs out
+    return True
+
+def reload_ai_model():
+    # Placeholder to prevent import errors in main
+    pass
 
 def analyze_colormillion(candles_data, asset_name=None):
     """
@@ -228,12 +156,40 @@ def analyze_colormillion(candles_data, asset_name=None):
         df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
         df['macd_hist'] = df['macd_line'] - df['signal_line']
 
+        # --- 3. EMA 200 (Trend Filter) ---
+        df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+        
+        # --- 4. ADX (Volatility Filter) ---
+        # Simplified ADX implementation
+        high = df['max']
+        low = df['min']
+        close = df['close']
+        
+        # True Range
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1/14, adjust=False).mean()
+        
+        # Directional Movement
+        up = high - high.shift(1)
+        down = low.shift(1) - low
+        plus_dm = np.where((up > down) & (up > 0), up, 0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0)
+        
+        plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1/14, adjust=False).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1/14, adjust=False).mean() / atr)
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        df['adx'] = dx.ewm(alpha=1/14, adjust=False).mean()
+
         # Get Last 2 Candles
         curr = df.iloc[-1]
         prev = df.iloc[-2]
         
         # Check if indicators are valid (not NaN)
-        if pd.isna(curr['ema_13']) or pd.isna(curr['macd_hist']):
+        # Ensure we have enough data for EMA 200
+        if pd.isna(curr['ema_13']) or pd.isna(curr['macd_hist']) or pd.isna(curr['ema_200']):
             return None
 
         ema_curr = curr['ema_13']
@@ -242,15 +198,30 @@ def analyze_colormillion(candles_data, asset_name=None):
         hist_curr = curr['macd_hist']
         hist_prev = prev['macd_hist']
         
+        ema_200 = curr['ema_200']
+        adx = curr.get('adx', 0)
+        close_curr = curr['close']
+        
         signal = None
         
-        # CALL Logic: Both Rising
+        # Filter Settings
+        MIN_ADX = 20
+        
+        # CALL Logic: Both Rising + Above EMA 200 + ADX OK
         if ema_curr > ema_prev and hist_curr > hist_prev:
-            signal = "CALL"
+            if close_curr > ema_200 and adx > MIN_ADX:
+                signal = "CALL"
+            elif close_curr <= ema_200:
+                # logger.info(f"Filtered CALL on {asset_name}: Price below EMA 200")
+                pass
             
-        # PUT Logic: Both Falling
+        # PUT Logic: Both Falling + Below EMA 200 + ADX OK
         elif ema_curr < ema_prev and hist_curr < hist_prev:
-            signal = "PUT"
+            if close_curr < ema_200 and adx > MIN_ADX:
+                signal = "PUT"
+            elif close_curr >= ema_200:
+                # logger.info(f"Filtered PUT on {asset_name}: Price above EMA 200")
+                pass
             
         return signal
 

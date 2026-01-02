@@ -281,9 +281,20 @@ class TradeManager:
             # Approximate elapsed time since check started
             time_since_start = time.time() - start_time
             
-            # Active Polling (Fallback if socket is silent for > 5s after expiry)
-            # Only start polling AFTER the trade should have expired
-            if not is_closed and time_since_start > (int(expiry) * 60 + 5) and not force_check:
+            # Active Polling: Check immediately after expiration
+            should_poll = False
+            # Check if we have exact expiration timestamp
+            exp_ts = int(order_data.get('expiration_time', 0) or order_data.get('expiration', 0))
+            
+            if exp_ts > 0:
+                 if time.time() > (exp_ts + 1):
+                     should_poll = True
+            else:
+                 # Fallback: wait for expiry duration + 1s buffer (was 5s)
+                 if time_since_start > (int(expiry) * 60 + 1):
+                     should_poll = True
+
+            if not is_closed and should_poll and not force_check:
                  logger.info(f"🕵️ Binary Result Polling: Fetching history for {order_id}...")
                  try:
                      # Fetch recent 10 positions (Turbo/Binary)
@@ -305,6 +316,7 @@ class TradeManager:
                                      order_data = pos
                                      is_closed = True 
                                      logger.info(f"✅ Found CLOSED trade {order_id} in history via polling.")
+                                     logger.info(f"DEBUG ORDER DATA: {pos}")
                                  else:
                                      # Still open, update our local data but don't mark closed
                                      order_data = pos
@@ -326,13 +338,15 @@ class TradeManager:
                 # Check outcome
                 result = order_data.get('win')
                 
-                invest = float(order_data.get('amount', 0))
-                profit_amount = float(order_data.get('profit_amount', 0) or 0) 
+                result = order_data.get('win') or order_data.get('close_reason')
+                
+                # Correct Field Mappings
+                invest = float(order_data.get('invest', 0) or order_data.get('amount', 0))
+                profit_amount = float(order_data.get('close_profit', 0) or order_data.get('profit_amount', 0) or 0)
                 
                 pnl = 0.0
                 
-                # Robust status check
-                is_win = result in ['win', 'won'] or (result is None and profit_amount > invest)
+                is_win = str(result).lower() in ['win', 'won'] or (result is None and profit_amount > invest)
                 
                 # Shadow Verification logic...
                 if (result is None or force_check) and self.market_manager and asset_name and direction:
@@ -370,6 +384,9 @@ class TradeManager:
                 if is_win:
                     if profit_amount >= invest:
                          pnl = profit_amount - invest
+                    else:
+                         pnl = invest * 0.85
+                else:
                     pnl = -invest
 
                 # Log for debugging
