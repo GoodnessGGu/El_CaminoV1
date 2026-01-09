@@ -17,7 +17,7 @@ from telegram import ReplyKeyboardMarkup, KeyboardButton
 from iqclient import IQOptionAPI, run_trade
 from signal_parser import parse_signals_from_text, parse_signals_from_file
 from settings import config, TIMEZONE_MANUAL, update_env_variable
-from keep_alive import keep_alive
+# from keep_alive import keep_alive  # Commented out - Flask not needed for local bot
 from channel_monitor import ChannelMonitor
 from strategies import analyze_strategy, analyze_colormillion, reload_ai_model
 from collect_data import run_collection_cycle
@@ -616,7 +616,9 @@ async def auto_trade_loop(asset, timeframe, context, chat_id):
             # Assuming api.get_candles returns list of dicts
             candles = api.get_candle_history(asset, 300, tf_seconds)
             
-            signal = analyze_colormillion(candles, asset_name=asset)
+            # === S/R BOUNCE STRATEGY (PROFITABLE!) ===
+            from sr_bounce_strategy import get_sr_bounce_signal
+            signal = get_sr_bounce_signal(candles, asset_name=asset)
             
             # --- AI Filter Integration ---
             if signal and config.use_ai_filter:

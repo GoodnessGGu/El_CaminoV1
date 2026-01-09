@@ -4,13 +4,12 @@ import logging
 from iqclient import IQOptionAPI
 from strategies import analyze_strategy, PATTERN_CONFIG
 from ml_utils import prepare_features
-from labeling_strategy import label_sr_bounces  # Normal S/R bounce for production
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-async def collect_and_label_data(api, asset, count=10000, timeframe=300):  # 5 minutes - optimal for Bitcoin
+async def collect_and_label_data(api, asset, count=5000, timeframe=60):
     """
     Fetches data, runs the strategy to find signals, and labels them (Win/Loss).
     """
@@ -38,15 +37,84 @@ async def collect_and_label_data(api, asset, count=10000, timeframe=300):  # 5 m
     # Re-align original candles to feature DF (features might drop initial rows due to NaN)
     # df_features contains the indicators + original columns
     
+    # --- 2. Iterate and Find Signals ---
+    labeled_data = []
     
-    # --- 2. Label using S/R Bounce Strategy (NORMAL - for production) ---
-    df_labeled = label_sr_bounces(df_features)
+    records = df_features.to_dict('records')
+    min_candles = 210 # Minimum required by SMA 200
     
-    if df_labeled is None or len(df_labeled) == 0:
-        logger.warning(f"No S/R bounce signals found for {asset}.")
+    logger.info("Labeling data (Optimized)...")
+    for i in range(min_candles, len(records) - 1):
+        # Current candle at 'i'
+        row = records[i]
+        signal = None
+        
+        prev_row = records[i-1]
+        
+        # Replicate ColorMillion Logic + Filters
+        # Note: We use the ML-calculated features here.
+        # Strategy: EMA13 Rising + MACD Rising + Trend(SMA200) + ADX>20
+        
+        ema_c = row.get('ema_13')
+        ema_p = prev_row.get('ema_13')
+        hist_c = row.get('macd_hist')
+        hist_p = prev_row.get('macd_hist')
+        trend_ma = row.get('sma_200') # Using SMA200 as ML trend feature
+        adx = row.get('adx', 0)
+        close = row['close']
+        
+        # Debug Log first 5 checks
+        if i < min_candles + 5:
+             logger.info(f"DEBUG {i}: EMAc={ema_c}, EMAp={ema_p}, HistC={hist_c}, ...")
+        
+        if ema_c and ema_p and hist_c is not None and hist_p is not None and trend_ma and not pd.isna(trend_ma):
+            # CALL
+            if (ema_c > ema_p) and (hist_c > hist_p):
+                 if close > trend_ma and adx > 20:
+                     signal = "CALL"
+            
+            # PUT
+            elif (ema_c < ema_p) and (hist_c < hist_p):
+                 if close < trend_ma and adx > 20:
+                     signal = "PUT"
+        
+        if signal:
+            # Check Outcome
+            # Signal at 'i' means we trade on 'i+1'
+            # If confirmed at close of 'i', we enter Open of 'i+1' or immediately.
+            # Usually simplified: Compare Close of 'i' vs Close of 'i+1'? 
+            # Or Open 'i+1' vs Close 'i+1'?
+            # strategies.py usually implies entering on next candle.
+            
+            entry_candle = records[i] # Signal generated here
+            next_candle = records[i+1] # Trade result here
+            
+            # Simple Outcome: 
+            # CALL Win: Close(i+1) > Open(i+1)
+            # PUT Win: Close(i+1) < Open(i+1)
+            
+            is_win = False
+            if signal == "CALL":
+                is_win = next_candle['close'] > next_candle['open']
+            elif signal == "PUT":
+                is_win = next_candle['close'] < next_candle['open']
+                
+            # Create data point
+            # We want the MODEL to predict using features from `entry_candle` (i)
+            # Target is `is_win`
+            
+            row = entry_candle.copy()
+            row['signal'] = signal
+            row['outcome'] = 1 if is_win else 0
+            
+            labeled_data.append(row)
+            
+    if not labeled_data:
+        logger.warning(f"No signals found in {len(df)} candles.")
         return None
-    
-    return df_labeled
+        
+    logger.info(f"Found {len(labeled_data)} training examples.")
+    return pd.DataFrame(labeled_data)
 
 async def run_collection_cycle(api_instance=None):
     """
@@ -69,12 +137,16 @@ async def run_collection_cycle(api_instance=None):
             logger.warning("API not connected. Attempting reconnect...")
             await api._connect()
 
-        # Collect S/R bounce data for best OTC pairs (for Telegram bot)
-        # These pairs showed 54-58% win rate with S/R bounce
+        # Collect data for many assets to generalize better
+        # Increased from 5000 to 10000 candles per asset
+        # Expanded from 7 to 14 assets for 4x more data
         assets = [
-            "GBPUSD-OTC",   # Best: ~58% win rate
-            "AUDUSD-OTC",   # Good: ~55% win rate
-            "USDJPY-OTC",   # Good: ~54% win rate
+            # Major pairs OTC
+            "EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "AUDUSD-OTC",
+            "USDCAD-OTC", "USDCHF-OTC", "NZDUSD-OTC",
+            # Cross pairs OTC
+            "EURGBP-OTC", "EURJPY-OTC", "GBPJPY-OTC", "AUDCAD-OTC",
+            "AUDNZD-OTC", "EURCHF-OTC", "GBPAUD-OTC"
         ]
         all_data = []
         

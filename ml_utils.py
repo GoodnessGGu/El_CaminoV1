@@ -4,8 +4,15 @@ import joblib
 import os
 import logging
 from xgboost import XGBClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+from sklearn.feature_selection import SelectKBest, mutual_info_classif, RFE
+from sklearn.ensemble import RandomForestClassifier as RFClassifier
+from scipy.stats import uniform, randint
+
+# Import new modules
+from data_validator import DataValidator
+from feature_engineering import add_all_advanced_features
 
 # ... (rest of imports)
 
@@ -18,10 +25,116 @@ logger = logging.getLogger(__name__)
 
 MODELS_DIR = "models"
 MODEL_PATH = os.path.join(MODELS_DIR, "trade_model.pkl")
+FEATURE_LIST_PATH = os.path.join(MODELS_DIR, "selected_features.txt")
 
 # ... (Indicators remain unchanged) ...
 
-def train_model(data_path="training_data.csv"):
+
+def select_best_features(X, y, method='mutual_info', k=30):
+    """
+    Selects top K features using various methods.
+    
+    Args:
+        X: Feature dataframe
+        y: Target variable
+        method: 'mutual_info', 'rfe', or 'importance'
+        k: Number of features to select
+    
+    Returns:
+        selected_features: List of feature names
+    """
+    logger.info(f"Selecting top {k} features using {method}...")
+    
+    if method == 'mutual_info':
+        # Mutual Information (detects non-linear relationships)
+        selector = SelectKBest(mutual_info_classif, k=min(k, X.shape[1]))
+        selector.fit(X, y)
+        selected = X.columns[selector.get_support()].tolist()
+        
+    elif method == 'rfe':
+        # Recursive Feature Elimination
+        estimator = RFClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        selector = RFE(estimator, n_features_to_select=min(k, X.shape[1]), step=1)
+        selector.fit(X, y)
+        selected = X.columns[selector.get_support()].tolist()
+        
+    elif method == 'importance':
+        # Feature Importance from Random Forest
+        rf = RFClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+        rf.fit(X, y)
+        importances = pd.Series(rf.feature_importances_, index=X.columns)
+        selected = importances.nlargest(min(k, X.shape[1])).index.tolist()
+    else:
+        logger.warning(f"Unknown method '{method}', using all features")
+        selected = X.columns.tolist()
+    
+    logger.info(f"Selected {len(selected)} features: {selected[:10]}...")
+    
+    return selected
+
+
+
+def tune_hyperparameters(X_train, y_train, n_iter=30):
+    """
+    Performs hyperparameter tuning for XGBoost using RandomizedSearchCV.
+    
+    Args:
+        X_train: Training features
+        y_train: Training labels
+        n_iter: Number of parameter combinations to try
+    
+    Returns:
+        best_params: Dictionary of best parameters found
+    """
+    logger.info(f"Starting hyperparameter tuning ({n_iter} iterations)...")
+    
+    # Define parameter distributions
+    param_distributions = {
+        'n_estimators': randint(300, 1000),
+        'learning_rate': uniform(0.01, 0.2),
+        'max_depth': randint(4, 10),
+        'min_child_weight': randint(1, 7),
+        'subsample': uniform(0.6, 0.4),  # 0.6 to 1.0
+        'colsample_bytree': uniform(0.6, 0.4),  # 0.6 to 1.0
+        'gamma': uniform(0, 0.3),
+        'reg_alpha': uniform(0, 0.5),
+        'reg_lambda': uniform(0.5, 1.5)  # 0.5 to 2.0
+    }
+    
+    # Base model
+    xgb_model = XGBClassifier(
+        eval_metric='logloss',
+        random_state=42,
+        n_jobs=-1,
+        use_label_encoder=False
+    )
+    
+    # Stratified K-Fold for better validation
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    
+    # RandomizedSearchCV
+    search = RandomizedSearchCV(
+        xgb_model,
+        param_distributions,
+        n_iter=n_iter,
+        scoring='roc_auc',  # Better than accuracy for imbalanced data
+        cv=cv,
+        verbose=1,
+        random_state=42,
+        n_jobs=-1
+    )
+    
+    search.fit(X_train, y_train)
+    
+    logger.info(f"Best parameters found:")
+    for param, value in search.best_params_.items():
+        logger.info(f"  {param}: {value}")
+    logger.info(f"Best CV ROC-AUC: {search.best_score_:.4f}")
+    
+    return search.best_params_, search.best_estimator_
+
+
+def train_model(data_path="training_data.csv", tune_params=True):
     """
     Trains an XGBoost model using labeled data.
     """
@@ -32,6 +145,15 @@ def train_model(data_path="training_data.csv"):
     logger.info("Loading data...")
     df = pd.read_csv(data_path)
     
+    # === NEW: Data Validation ===
+    logger.info("Validating data quality...")
+    is_valid, issues = DataValidator.check_data_quality(df)
+    
+    if not is_valid:
+        logger.warning("Data has quality issues. Cleaning...")
+        df = DataValidator.clean_data(df)
+        logger.info(f"Data cleaned. New size: {len(df)} rows")
+    
     # Separate features (X) and target (y)
     if 'outcome' not in df.columns:
         logger.error("Data missing 'outcome' column.")
@@ -41,7 +163,7 @@ def train_model(data_path="training_data.csv"):
     drop_raw = ['open', 'close', 'min', 'max', 'volume', 'sma_20', 'sma_50', 'bb_upper', 'bb_lower']
     
     # Also drop metadata
-    drop_meta = ['time', 'outcome', 'signal', 'asset', 'from', 'to', 'id', 'at', 'next_close', 'next_open']
+    drop_meta = ['time', 'outcome', 'signal', 'asset', 'from', 'to', 'id', 'at', 'next_close', 'next_open', 'entry_reason']
     
     # Combine drops
     annotated_cols = drop_raw + drop_meta
@@ -65,29 +187,57 @@ def train_model(data_path="training_data.csv"):
 
     y = df.loc[X.index, 'outcome'] # Align y with cleaned X
     
+    # === NEW: Feature Selection ===
+    logger.info(f"Initial feature count: {X.shape[1]}")
+    selected_features = select_best_features(X, y, method='importance', k=30)
+    X = X[selected_features]
+    logger.info(f"Reduced to {X.shape[1]} features")
+    
+    # Save selected features for later use
+    if not os.path.exists(MODELS_DIR):
+        os.makedirs(MODELS_DIR)
+    with open(FEATURE_LIST_PATH, 'w') as f:
+        f.write('\n'.join(selected_features))
+    logger.info(f"Selected features saved to {FEATURE_LIST_PATH}")
+    
     # Split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
     logger.info("Training XGBoost Classifier...")
     
-    # XGBoost Configuration
-    clf = XGBClassifier(
-        n_estimators=500,
-        learning_rate=0.05,
-        max_depth=6,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        eval_metric='logloss',
-        random_state=42,
-        n_jobs=-1
-    )
-    
-    clf.fit(X_train, y_train)
+    # === NEW: Hyperparameter Tuning ===
+    if tune_params and len(X_train) > 5000:  # Only tune if we have enough data
+        logger.info("🔧 Performing hyperparameter tuning...")
+        best_params, clf = tune_hyperparameters(X_train, y_train, n_iter=30)
+    else:
+        # Use optimized default parameters
+        logger.info("Using optimized default parameters...")
+        clf = XGBClassifier(
+            n_estimators=700,
+            learning_rate=0.03,
+            max_depth=7,
+            min_child_weight=3,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            gamma=0.1,
+            reg_alpha=0.2,
+            reg_lambda=1.0,
+            eval_metric='logloss',
+            random_state=42,
+            n_jobs=-1,
+            use_label_encoder=False
+        )
+        clf.fit(X_train, y_train)
     
     # Evaluate
     y_pred = clf.predict(X_test)
+    y_pred_proba = clf.predict_proba(X_test)[:, 1]
+    
     acc = accuracy_score(y_test, y_pred)
+    auc = roc_auc_score(y_test, y_pred_proba)
+    
     logger.info(f"Model Accuracy: {acc:.2f}")
+    logger.info(f"Model ROC-AUC: {auc:.4f}")
     logger.info("\n" + classification_report(y_test, y_pred))
     
     # Save
@@ -96,9 +246,104 @@ def train_model(data_path="training_data.csv"):
         
     joblib.dump(clf, MODEL_PATH)
     logger.info(f"Model saved to {MODEL_PATH}")
-    joblib.dump(clf, MODEL_PATH)
-    logger.info(f"Model saved to {MODEL_PATH}")
     return clf
+
+
+def train_ensemble_model(data_path="training_data.csv", ensemble_type='stacking'):
+    """
+    Trains ensemble model using stacking or voting.
+    
+    Args:
+        data_path: Path to training data CSV
+        ensemble_type: 'stacking' or 'voting'
+    
+    Returns:
+        Trained ensemble model
+    """
+    from ensemble_model import StackingEnsemble, VotingEnsemble
+    
+    if not os.path.exists(data_path):
+        logger.error(f"Data file not found: {data_path}")
+        return None
+    
+    logger.info(f"🚀 Training {ensemble_type.upper()} Ensemble Model...")
+    logger.info("Loading data...")
+    df = pd.read_csv(data_path)
+    
+    # === Data Validation ===
+    logger.info("Validating data quality...")
+    is_valid, issues = DataValidator.check_data_quality(df)
+    
+    if not is_valid:
+        logger.warning("Data has quality issues. Cleaning...")
+        df = DataValidator.clean_data(df)
+        logger.info(f"Data cleaned. New size: {len(df)} rows")
+    
+    # Separate features (X) and target (y)
+    if 'outcome' not in df.columns:
+        logger.error("Data missing 'outcome' column.")
+        return None
+
+    # DROP RAW COLUMNS
+    drop_raw = ['open', 'close', 'min', 'max', 'volume', 'sma_20', 'sma_50', 'bb_upper', 'bb_lower']
+    drop_meta = ['time', 'outcome', 'signal', 'asset', 'from', 'to', 'id', 'at', 'next_close', 'next_open']
+    annotated_cols = drop_raw + drop_meta
+    
+    X = df.drop(columns=[c for c in annotated_cols if c in df.columns])
+    X = X.dropna()
+    y = df.loc[X.index, 'outcome']
+    
+    # === Feature Selection ===
+    logger.info(f"Initial feature count: {X.shape[1]}")
+    
+    # Load selected features if available
+    if os.path.exists(FEATURE_LIST_PATH):
+        with open(FEATURE_LIST_PATH, 'r') as f:
+            selected_features = [line.strip() for line in f.readlines()]
+        
+        # Filter to available features
+        selected_features = [f for f in selected_features if f in X.columns]
+        X = X[selected_features]
+        logger.info(f"Using {len(selected_features)} pre-selected features")
+    else:
+        # Select features if not already done
+        selected_features = select_best_features(X, y, method='importance', k=30)
+        X = X[selected_features]
+        logger.info(f"Selected {len(selected_features)} features")
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Train ensemble
+    if ensemble_type == 'stacking':
+        ensemble = StackingEnsemble(use_cv=True)
+    else:
+        ensemble = VotingEnsemble()
+    
+    ensemble.train(X_train, y_train, X_test, y_test)
+    
+    # Evaluate
+    y_pred = ensemble.predict(X_test, threshold=0.65)
+    y_pred_proba = ensemble.predict_proba(X_test)
+    
+    from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
+    
+    acc = accuracy_score(y_test, y_pred)
+    auc = roc_auc_score(y_test, y_pred_proba)
+    
+    logger.info(f"📊 Ensemble Test Accuracy: {acc:.4f}")
+    logger.info(f"📊 Ensemble ROC-AUC: {auc:.4f}")
+    logger.info("\n" + classification_report(y_test, y_pred))
+    
+    # Save ensemble
+    ensemble_path = os.path.join(MODELS_DIR, f"ensemble_{ensemble_type}.pkl")
+    ensemble.save(ensemble_path)
+    
+    logger.info(f"✅ {ensemble_type.upper()} Ensemble training complete!")
+    
+    return ensemble
+
+
 
 def train_rf_model(data_path="training_data.csv"):
     """
@@ -195,8 +440,6 @@ def calculate_atr(df, period=14):
     tr2 = abs(high - close.shift(1))
     tr3 = abs(low - close.shift(1))
     
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(window=period).mean()
     return atr
@@ -489,6 +732,9 @@ def prepare_features(df):
         # Log Returns or Simple Returns
         df[f'return_lag_{lag}'] = df['close'].pct_change(lag) * 100
         df[f'rsi_lag_{lag}'] = df['rsi'].shift(lag)
+    
+    # === NEW: Add Advanced Features ===
+    df = add_all_advanced_features(df)
     
     # Drop rows with NaN (due to rolling windows)
     df = df.dropna()
