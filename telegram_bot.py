@@ -669,13 +669,16 @@ async def auto_trade_loop(asset, timeframe, context, chat_id):
                     except Exception as e:
                         logger.error(f"Failed to send trade result: {e}")
 
-                # Execute trade (1 min expiry default for strategy)
+                # Execute trade with correct expiry time (timeframe in minutes)
                 # Smart Martingale Check
                 base_amount = config.trade_amount
                 trade_amount, max_gales = smart_trade_manager.get_trade_details(asset, base_amount)
 
+                # Calculate expiry in minutes from timeframe in seconds
+                expiry_minutes = tf_seconds // 60  # 300 seconds = 5 minutes
+                
                 # Execute
-                result = await run_trade(api, asset, signal, 1, trade_amount, max_gales=max_gales, notification_callback=notify_result)
+                result = await run_trade(api, asset, signal, expiry_minutes, trade_amount, max_gales=max_gales, notification_callback=notify_result)
                 
                 # Update Smart Martingale State
                 if result:
