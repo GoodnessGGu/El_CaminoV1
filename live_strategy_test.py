@@ -11,8 +11,8 @@ from iqclient import IQOptionAPI
 from combined_strategy import get_combined_signal, get_colormillion_only, get_engulfing_only
 
 # Test configuration
-TEST_DURATION_MINUTES = 15
-EXPIRY_MINUTES = 1
+TEST_DURATION_MINUTES = 30
+EXPIRY_MINUTES = 5  # Changed from 1 to 5 (1-min not available on OTC pairs)
 TRADE_AMOUNT = 1.0
 CHECK_INTERVAL_SECONDS = 5
 
@@ -100,7 +100,7 @@ async def run_live_test():
     global starting_balance, total_pnl
     
     print("=" * 80)
-    print("LIVE STRATEGY TEST - 15 MINUTE RUN")
+    print("LIVE STRATEGY TEST - COLORMILLION ONLY")
     print("=" * 80)
     print(f"\n⚙️ Configuration:")
     print(f"   Duration: {TEST_DURATION_MINUTES} minutes")
@@ -153,10 +153,10 @@ async def run_live_test():
                     print(f"   ColorMillion: {colormillion or '-'}")
                     print(f"   Engulfing:    {engulfing or '-'}")
                 
-                # Execute trade if combined signal found
-                if combined:
-                    print(f"\n🎯 COMBINED SIGNAL FOUND: {asset} → {combined}")
-                    await execute_test_trade(api, asset, combined)
+                # Execute trade if ColorMillion signal found (CHANGED FROM COMBINED)
+                if colormillion:
+                    print(f"\n🎯 COLORMILLION SIGNAL FOUND: {asset} → {colormillion}")
+                    await execute_test_trade(api, asset, colormillion)
                     
             except Exception as e:
                 print(f"⚠️ Error checking {asset}: {e}")
