@@ -188,9 +188,18 @@ class TradeManager:
 
             start_time = time.time() # Capture time before sending
             msg = self._build_binary_body(asset, amount, expiry, direction, option_type_id)
+            
+            # DEBUG: Log what we're sending
+            logger.info(f"🔍 Sending binary order: {asset} {direction} ${amount} {expiry}m (type_id: {option_type_id})")
+            logger.info(f"🔍 Order message: {msg}")
+            
             self.ws_manager.send_message("sendMessage", msg, request_id)
 
             active_id = self.get_asset_id(asset)
+            
+            # DEBUG: Log what we're waiting for
+            logger.info(f"🔍 Waiting for confirmation: active_id={active_id}, amount={amount}, direction={direction}")
+            
             return await self.wait_for_binary_order_confirmation(active_id, amount, direction, start_time, expiry)
         
         except (InvalidTradeParametersError, TradeExecutionError, KeyError) as e:
@@ -224,9 +233,20 @@ class TradeManager:
         
         end_time = time.time() + timeout
         
+        # DEBUG: Log initial state
+        logger.info(f"🔍 Starting wait for binary confirmation (timeout={timeout}s)")
+        logger.info(f"🔍 Looking for: active_id={active_id}, amount={amount}, direction={direction}")
+        
         while time.time() < end_time:
             # 1. Check existing list first
             current_list = list(self.message_handler.recent_binary_opens)
+            
+            # DEBUG: Log what we have
+            if current_list:
+                logger.info(f"🔍 Found {len(current_list)} recent binary opens")
+                for idx, order in enumerate(current_list):
+                    logger.info(f"🔍 Order {idx}: {order}")
+            
             for order in current_list:
                  created_at_ms = order.get("created_at") or order.get("open_time_millisecond", 0)
                  created_at = created_at_ms / 1000.0
@@ -237,12 +257,16 @@ class TradeManager:
                          o_amt = float(order.get("amount"))
                          o_dir = order.get("direction")
                          
+                         # DEBUG: Log matching attempt
+                         logger.info(f"🔍 Checking order: active_id={oa_id} vs {active_id}, amount={o_amt} vs {amount}, direction={o_dir} vs {direction}")
+                         
                          if oa_id == active_id and abs(o_amt - amount) < 0.01 and o_dir == direction:
                              result_id = order.get("id") or order.get("option_id")
                              expires_in = get_remaining_secs(self.message_handler.server_time, expiry)
-                             logger.info(f'Binary Order Executed, ID: {result_id}, Expires in: {expires_in}s')
+                             logger.info(f'✅ Binary Order Executed, ID: {result_id}, Expires in: {expires_in}s')
                              return True, result_id
-                     except Exception:
+                     except Exception as e:
+                         logger.warning(f"🔍 Error checking order: {e}")
                          continue
 
             # 2. Wait for NEW event (instead of sleep)
@@ -254,9 +278,12 @@ class TradeManager:
             try:
                 self.message_handler.binary_order_event.clear()
                 await asyncio.wait_for(self.message_handler.binary_order_event.wait(), timeout=min(remaining, 0.5))
+                logger.info(f"🔍 Binary order event triggered, checking again...")
             except asyncio.TimeoutError:
                 pass # Just loop check again
             
+        logger.error(f"❌ Binary order confirmation timed out after {timeout}s")
+        logger.error(f"❌ Final state: {len(self.message_handler.recent_binary_opens)} orders in recent_binary_opens")
         return False, "Binary order confirmation timed out (No match found)"
     
     async def get_binary_trade_outcome(self, order_id: int, expiry: int = 1, asset_name: str = None, direction: str = None):
