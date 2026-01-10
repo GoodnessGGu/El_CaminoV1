@@ -12,7 +12,7 @@ from combined_strategy import get_combined_signal, get_colormillion_only, get_en
 
 # Test configuration
 TEST_DURATION_MINUTES = 30
-EXPIRY_MINUTES = 5  # Changed from 1 to 5 (1-min not available on OTC pairs)
+EXPIRY_MINUTES = 1  # Changed from 1 to 5 (1-min not available on OTC pairs)
 TRADE_AMOUNT = 1.0
 CHECK_INTERVAL_SECONDS = 5
 
@@ -36,8 +36,8 @@ async def execute_test_trade(api, asset, signal):
     try:
         print(f"\n🚀 Executing {signal} on {asset} (${TRADE_AMOUNT}, {EXPIRY_MINUTES}m expiry)")
         
-        # Execute trade
-        success, order_id = await api.execute_binary_option_trade(
+        # Execute trade - USE DIGITAL OPTIONS (binary/turbo being rejected)
+        success, order_id = await api.execute_digital_option_trade(
             asset, 
             TRADE_AMOUNT, 
             signal, 
@@ -58,8 +58,8 @@ async def execute_test_trade(api, asset, signal):
         print(f"✅ Trade placed - Order ID: {order_id}")
         print(f"⏳ Waiting {EXPIRY_MINUTES} minute(s) for result...")
         
-        # Wait for trade to complete
-        pnl_ok, pnl = await api.get_binary_trade_outcome(
+        # Wait for trade to complete - USE DIGITAL OUTCOME
+        pnl_ok, pnl = await api.get_trade_outcome(
             order_id, 
             expiry=EXPIRY_MINUTES,
             asset_name=asset,
