@@ -841,14 +841,18 @@ def predict_signal(model, features_df, direction=None):
         win_prob = proba[0][1] # Probability of Class 1 (Win)
         
         # 4. Balanced Precision Filters
-        threshold = 0.65
+        # ADJUSTED: Lowered thresholds to increase trade frequency
+        # Previous: 0.65 confidence, ADX > 22 (too strict - only 1 trade in 14 hours)
+        # New: 0.55 confidence, ADX > 18 (more practical while still filtering)
+        threshold = 0.55
         
         # A) Confidence Check
         if win_prob < threshold:
             return 0
             
         # B) Choppy Market Filter (ADX)
-        if raw_adx is not None and raw_adx < 22:
+        # Lowered from 22 to 18 to allow more trades in moderate trends
+        if raw_adx is not None and raw_adx < 18:
              # logger.info(f"AI REJECT: ADX Weak ({raw_adx:.1f})")
              return 0
             
